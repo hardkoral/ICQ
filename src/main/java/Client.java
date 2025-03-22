@@ -78,12 +78,15 @@ public class Client {
                 getMessage.start();
 
                 Thread sendMessage = new Thread(() -> {
-                    Scanner scanner = new Scanner(System.in);
-                    System.out.println("请输入消息:格式为[目标|消息]，如：[ALL|你好]");
-                    String msg = scanner.nextLine();
+                    while (true){
+                        Scanner scanner = new Scanner(System.in);
+                        System.out.println("请输入消息:格式为[目标|消息]，如：[ALL|你好]");
+                        String msg = scanner.nextLine();
 
-                    printWriter.println(msg);
-                    printWriter.flush();
+                        printWriter.println(msg);
+                        printWriter.flush();
+                    }
+
                 });
                 sendMessage.start();
             } else {

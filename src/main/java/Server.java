@@ -13,7 +13,7 @@ public class Server {
 //    存储用户名以及相应的socket
     public static void main(String[] args) {
         ServerSocket serverSocket ;
-        Socket socket ;
+        Socket senderSocket ;
         try {
             serverSocket = new ServerSocket(8888);
 //
@@ -31,17 +31,17 @@ public class Server {
 
             while (true){
                 System.out.println("等待客户端连接......");
-                socket = serverSocket.accept();
+                senderSocket = serverSocket.accept();
 
-                InputStream inputStream = socket.getInputStream();
+                InputStream inputStream = senderSocket.getInputStream();
                 BufferedReader reader = new BufferedReader(new InputStreamReader(inputStream));
                 String username = reader.readLine();
                 System.out.println("用户名：" + username);
-                map.put(username, socket);
+                map.put(username, senderSocket);
 
                 System.out.println("有新客户进入......");
                 // 一直处于收消息状态，一旦收到消息就开始对消息进行解析
-                GetMessageThread gmt = new GetMessageThread(reader,map,username);
+                GetMessageThread gmt = new GetMessageThread(senderSocket, reader,map,username);
                 gmt.start();
 
             }
@@ -57,10 +57,12 @@ class GetMessageThread extends Thread {
     private final BufferedReader reader;
     private final Map<String,Socket>map;
     private final String username;
-    public GetMessageThread(BufferedReader reader,Map<String ,Socket>map,String username){
+    private final Socket senderSocket;
+    public GetMessageThread(Socket senderSocket, BufferedReader reader, Map<String ,Socket>map, String username){
         this.reader=reader;
         this.map=map;
         this.username=username;
+        this.senderSocket = senderSocket;
     }
 
 
@@ -79,25 +81,26 @@ class GetMessageThread extends Thread {
                 if(Objects.equals(strings[0], "ALL")){
 
                     for (String key : map.keySet()){
-                        Socket socket=map.get(key);
+                        Socket geterSocket=map.get(key);
                         String flag="(群发)";
-                        sendMsgWithTime(strings, socket,flag,username);
+                        sendMsgWithTime(strings, geterSocket,senderSocket,flag,username);
                     }
                 }else{
-                    Socket socket=map.get(strings[0]);
+                    Socket geterSocket=map.get(strings[0]);
                     String flag="(私发)";
-                    sendMsgWithTime(strings, socket,flag,username);
+                    sendMsgWithTime(strings, geterSocket,senderSocket,flag,username);
                 }
 
             }
         } catch (IOException e) {
-            throw new RuntimeException(e);
+            System.out.println(username+"断开链接");
+
         }
         System.out.println("收消息线程启动");
     }
 
 
-    private void sendMsgWithTime(String[] strings, Socket socket,String flag,String username) {
+    private void sendMsgWithTime(String[] strings, Socket geterSocket,Socket senderSocket,String flag,String username) {
         new Thread(()->{
 
             try {
@@ -105,13 +108,23 @@ class GetMessageThread extends Thread {
                 DateTimeFormatter formatter = DateTimeFormatter.ofPattern("HH:mm:ss");
                 String formattedTime = LocalTime.now().format(formatter);
 
-                OutputStream OutputStream = socket.getOutputStream();
+                OutputStream OutputStream = geterSocket.getOutputStream();
                 OutputStreamWriter outputStreamWriter = new OutputStreamWriter(OutputStream);
                 PrintWriter printWriter=new PrintWriter(outputStreamWriter);
                 printWriter.println(formattedTime+flag+username+":"+ strings[1]);
                 printWriter.flush();
             } catch (IOException e) {
-                throw new RuntimeException(e);
+
+                try {
+                    System.out.println("发送失败，用户不存在或者不在线");
+                    OutputStream OutputStream = senderSocket.getOutputStream();
+                    OutputStreamWriter outputStreamWriter = new OutputStreamWriter(OutputStream);
+                    PrintWriter printWriter=new PrintWriter(outputStreamWriter);
+                    printWriter.println("发送失败，用户不存在或者不在线");
+                } catch (IOException ex) {
+                    throw new RuntimeException(ex);
+                }
+
             }
 
         }).start();
