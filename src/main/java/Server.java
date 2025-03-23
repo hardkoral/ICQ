@@ -1,138 +1,142 @@
-
 import java.io.*;
-import java.net.ServerSocket;
-import java.net.Socket;
-import java.time.LocalTime;
-import java.time.format.DateTimeFormatter;
+import java.net.*;
+import java.time.*;
+import java.time.format.*;
 import java.util.*;
+import java.util.concurrent.*;
 
-// 每个同学都创建
 public class Server {
+    // 使用线程安全的ConcurrentHashMap
+    public static final Map<String, Socket> onlineUsers = new HashMap<>();
+    // 发送消息的线程池
+    private static final ExecutorService sendThreadPool = Executors.newCachedThreadPool();
 
-    public static Map<String,Socket> map=new HashMap<>();
-//    存储用户名以及相应的socket
     public static void main(String[] args) {
-        ServerSocket serverSocket ;
-        Socket senderSocket ;
-        try {
-            serverSocket = new ServerSocket(8888);
-//
-//            // 读取server.properties，Java提供了相应类
-//            Properties properties = new Properties();
-//            properties.load(
-//                    Server.class.getClassLoader().getResourceAsStream("server.properties")
-//            );
-//            String ip = properties.getProperty("ip");
-//            String port = properties.getProperty("port");
-//            System.out.println(ip);
-//            System.out.println(port);
-//            SendIpAndPort.sendIpAndPort(ip, Integer.parseInt(port));
 
+        try (ServerSocket serverSocket = new ServerSocket(8888)) {
+            System.out.println("服务器已启动");
 
-            while (true){
-                System.out.println("等待客户端连接......");
-                senderSocket = serverSocket.accept();
+            while (true) {
+                Socket clientSocket = serverSocket.accept();
+                System.out.println("检测到新客户端连接...");
 
-                InputStream inputStream = senderSocket.getInputStream();
-                BufferedReader reader = new BufferedReader(new InputStreamReader(inputStream));
-                String username = reader.readLine();
-                System.out.println("用户名：" + username);
-                map.put(username, senderSocket);
-
-                System.out.println("有新客户进入......");
-                // 一直处于收消息状态，一旦收到消息就开始对消息进行解析
-                GetMessageThread gmt = new GetMessageThread(senderSocket, reader,map,username);
-                gmt.start();
-
-            }
-
-        } catch (IOException e) {
-            throw new RuntimeException(e);
-        }
-    }
-}
-
-class GetMessageThread extends Thread {
-
-    private final BufferedReader reader;
-    private final Map<String,Socket>map;
-    private final String username;
-    private final Socket senderSocket;
-    public GetMessageThread(Socket senderSocket, BufferedReader reader, Map<String ,Socket>map, String username){
-        this.reader=reader;
-        this.map=map;
-        this.username=username;
-        this.senderSocket = senderSocket;
-    }
-
-
-    public void run() {
-        String msg;
-        try {
-            while( (msg=reader.readLine())!=null){
-                //解析收到的消息，获得username与消息
-                //然后获取socket，发消息
-
-                String[] strings= msg.split("\\|");
-                //获取socket
-
-                //若客户端发来的是“ALL”群发消息则遍历map中的username且获取其socket并发送消息
-
-                if(Objects.equals(strings[0], "ALL")){
-
-                    for (String key : map.keySet()){
-                        Socket geterSocket=map.get(key);
-                        String flag="(群发)";
-                        sendMsgWithTime(strings, geterSocket,senderSocket,flag,username);
-                    }
-                }else{
-                    Socket geterSocket=map.get(strings[0]);
-                    String flag="(私发)";
-                    sendMsgWithTime(strings, geterSocket,senderSocket,flag,username);
-                }
-
+                // 为新客户端启动处理线程
+                new Thread(() -> handleClient(clientSocket)).start();
             }
         } catch (IOException e) {
-            System.out.println(username+"断开链接");
-
+            System.err.println("服务器启动失败: " + e.getMessage());
         }
-        System.out.println("收消息线程启动");
     }
 
+    private static void handleClient(Socket clientSocket) {
+        String username = null;
+        try (BufferedReader reader = new BufferedReader(
+                new InputStreamReader(clientSocket.getInputStream()))) {
 
-    private void sendMsgWithTime(String[] strings, Socket geterSocket,Socket senderSocket,String flag,String username) {
-        new Thread(()->{
+            // 读取用户名
+            username = reader.readLine();
+            if (username == null) {
+                return; // 客户端未发送用户名直接断开
+            }
 
+            onlineUsers.put(username, clientSocket);
+            System.out.println("用户 [" + username + "] 加入聊天室");
+
+            // 持续接收消息
+            String message;
+            while ((message = reader.readLine()) != null) {
+                processMessage(message, username, clientSocket);
+            }
+        } catch (IOException e) {
+            System.out.println("用户 [" + username + "] 断开连接");
+        } finally {
+            cleanupUser(username, clientSocket);
+        }
+    }
+
+    private static void processMessage(String message, String sender, Socket senderSocket) {
+        String[] parts = message.split("\\|", 2); // 限制分割次数为2
+        if (parts.length < 2) {
+            sendError(senderSocket, "无效消息格式，请使用 [目标|内容]");
+            return;
+        }
+
+        String target = parts[0];
+        String content = parts[1];
+
+        if ("ALL".equalsIgnoreCase(target)) {
+            broadcastMessage(sender, content);
+        } else {
+            sendPrivateMessage(sender, target, content, senderSocket);
+        }
+        System.out.println("["+sender+"] to ["+target+"]:"+content);
+
+    }
+
+    // 群发消息
+    private static void broadcastMessage(String sender, String content) {
+        String formattedMessage = formatMessage(sender, content, "(群发)");
+        onlineUsers.forEach((user, socket) -> {
+            if (!user.equals(sender)) { // 不发送给自己
+                sendMessage(socket, formattedMessage);
+            }
+        });
+    }
+
+    // 私发消息
+    private static void sendPrivateMessage(String sender, String target, String content, Socket senderSocket) {
+        Socket targetSocket = onlineUsers.get(target);
+        if (targetSocket != null && !targetSocket.isClosed()) {
+            String formattedMessage = formatMessage(sender, content, "(私发)");
+            sendMessage(targetSocket, formattedMessage);
+        } else {
+            sendError(senderSocket, "错误: 用户 [" + target + "] 不存在或已离线");
+        }
+    }
+
+    // 发送消息（线程池处理）
+    private static void sendMessage(Socket socket, String message) {
+        sendThreadPool.submit(() -> {
             try {
-
-                DateTimeFormatter formatter = DateTimeFormatter.ofPattern("HH:mm:ss");
-                String formattedTime = LocalTime.now().format(formatter);
-
-                OutputStream OutputStream = geterSocket.getOutputStream();
-                OutputStreamWriter outputStreamWriter = new OutputStreamWriter(OutputStream);
-                PrintWriter printWriter=new PrintWriter(outputStreamWriter);
-                printWriter.println(formattedTime+flag+username+":"+ strings[1]);
-                printWriter.flush();
+                PrintWriter writer = new PrintWriter(socket.getOutputStream(), true);
+                writer.println(message);
             } catch (IOException e) {
-
-                try {
-                    System.out.println("发送失败，用户不存在或者不在线");
-                    OutputStream OutputStream = senderSocket.getOutputStream();
-                    OutputStreamWriter outputStreamWriter = new OutputStreamWriter(OutputStream);
-                    PrintWriter printWriter=new PrintWriter(outputStreamWriter);
-                    printWriter.println("发送失败，用户不存在或者不在线");
-                } catch (IOException ex) {
-                    throw new RuntimeException(ex);
-                }
-
+                System.err.println("消息发送失败: " + e.getMessage());
             }
+        });
+    }
 
-        }).start();
+    // 格式化消息（含时间戳）
+    private static String formatMessage(String sender, String content, String flag) {
+        DateTimeFormatter formatter = DateTimeFormatter.ofPattern("HH:mm:ss");
+        return LocalTime.now().format(formatter) + flag + sender + ": " + content;
+    }
+
+    // 发送错误提示给发送者
+    private static void sendError(Socket socket, String errorMsg) {
+        sendThreadPool.submit(() -> {
+            try {
+                PrintWriter writer = new PrintWriter(socket.getOutputStream(), true);
+                writer.println(errorMsg);
+            } catch (IOException e) {
+                System.err.println("发送错误消息失败: " + e.getMessage());
+            }
+        });
+    }
+
+
+    // 清理离线用户
+    private static void cleanupUser(String username, Socket socket) {
+        if (username != null) {
+            onlineUsers.remove(username);
+            System.out.println("用户 [" + username + "] 已从在线列表移除");
+        }
+        try {
+            if (socket != null && !socket.isClosed()) {
+                socket.close();
+            }
+        } catch (IOException e) {
+            System.err.println("关闭Socket失败: " + e.getMessage());
+        }
     }
 }
-
-//class SendMessageThread extends Thread {
-//    public void run() {
-//        System.out.println("发消息线程启动");
-//    }
-//}
